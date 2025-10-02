@@ -5,8 +5,6 @@ import "./RejNFT.sol";
 import "./interfaces/IRejNFT.sol";
 import "./interfaces/IExNFT.sol";
 
-import "@openzeppelin/contracts/utils/Counters.sol";
-
 contract ExNFT is RejNFT, IExNFT {
 
     struct proposal{
@@ -24,12 +22,6 @@ contract ExNFT is RejNFT, IExNFT {
         RejNFT(name_, symbol_) 
         { }
 
-/* 
-    function safeMint(address _to) public override onlyOwner {
-        uint256 tokenId = _tokenIdCounter.current();
-        _tokenIdCounter.increment();
-        _mint(_to, tokenId);
-    } */
 
 
 
@@ -52,7 +44,7 @@ contract ExNFT is RejNFT, IExNFT {
         uint256 deadline
     ) public virtual {
         require(
-            _isApprovedOrOwner(_msgSender(), tokenId1),
+            _isAuthorized(from, _msgSender(), tokenId1),
             "ExNFT: transfer caller is not owner nor approved"
         );
 
@@ -70,7 +62,7 @@ contract ExNFT is RejNFT, IExNFT {
         require(deadline > block.timestamp, "ExNFT: Incorrect deadline");
 
         // Clear approvals from the previous owner
-        _approve(address(0), tokenId1);
+        approve(address(0), tokenId1);
 
         swapProp[tokenId1] = proposal(from, to, tokenId1, tokenId2, deadline);
         newProposal[tokenId1] = true;
@@ -86,7 +78,7 @@ contract ExNFT is RejNFT, IExNFT {
         require(swapProp[tokenId1].tokenId2 == tokenId2, "ExNFT: any swap proposal for $tokenId1$ provided or the swap proposal for $tokenId2$ does not correspond with the given $tokenId2$");
 
         require(
-            _isApprovedOrOwner(_msgSender(), tokenId2),
+            _isAuthorized(ownerOf(tokenId2), _msgSender(), tokenId2),
             "ExNFT: the caller is neither the receiver nor approved for the token"
         );
 
@@ -101,7 +93,8 @@ contract ExNFT is RejNFT, IExNFT {
         emit Transfer(from, to, tokenId1);
 
         // Clear approvals from the previous owner
-        _approve(address(0), tokenId2);
+        _approve(address(0), tokenId1, address(0), false);
+
         
         _owners[tokenId2] = from;
         emit Transfer(to, from, tokenId2);
@@ -116,14 +109,15 @@ contract ExNFT is RejNFT, IExNFT {
     function rejectOrCancelSwap(uint256 tokenId1, uint256 tokenId2) public {
         require(newProposal[tokenId1] && newProposal[tokenId2], "ExNFT: Any swap proposal for the provided tokens currently open");
         
+        address from = swapProp[tokenId1].from;
+        address to = swapProp[tokenId1].to;
+
         require(
-            (_isApprovedOrOwner(_msgSender(), tokenId1) || _isApprovedOrOwner(_msgSender(), tokenId2)) && 
+            (_isAuthorized(from, _msgSender(), tokenId1) || _isAuthorized(to,_msgSender(), tokenId2)) &&
             swapProp[tokenId1].tokenId1 == tokenId1 &&  swapProp[tokenId1].tokenId2 == tokenId2,
             "ExNFT: reject transfer caller is not the receiver or the sender nor approved of the token"
         );
-
-        address from = swapProp[tokenId1].from;
-        address to = swapProp[tokenId1].to;
+        
 
         delete swapProp[tokenId1];
         newProposal[tokenId1] = false;

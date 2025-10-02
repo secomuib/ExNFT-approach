@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.12;
+pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -7,9 +7,8 @@ import "./NFT.sol";
 import "./interfaces/IRejNFT.sol";
 
 contract RejNFT is ERC721, IRejNFT, Ownable {
-    using Counters for Counters.Counter;
 
-    Counters.Counter internal _tokenIdCounter;
+    uint256 private _tokenIdCounter;
 
     // Mapping from token ID to transferable owner
     mapping(uint256 => address) internal _transferableOwners;
@@ -18,36 +17,50 @@ contract RejNFT is ERC721, IRejNFT, Ownable {
      * @dev Initializes the contract by setting a `name` and a `symbol` to the token collection.
      * overrides ERC721 constructor
      */
-    constructor(string memory name_, string memory symbol_) 
-        ERC721(name_, symbol_)
-        { }
 
-    /**
-     * @dev Returns whether `spender` is allowed to manage `tokenId`.
-     *
-     * Requirements:
-     *
-     * - `tokenId` must exist.
-     */
-    function _isApprovedOrOwner(address spender, uint256 tokenId)
-        internal
-        view
-        virtual
-        override
-        returns (bool)
-    {
-        require(
-            _exists(tokenId),
-            "ERC721: operator query for nonexistent token"
-        );
-        address owner = ownerOf(tokenId);
-        return (spender == owner ||
-            isApprovedForAll(owner, spender) ||
-            getApproved(tokenId) == spender);
-    }
+    constructor (string memory name_, string memory symbol_) ERC721(name_, symbol_) Ownable(msg.sender){}
     
     /**
-     * @dev Request the mint of `tokenId` and transfer it to `to`.
+     * @dev Transfers `tokenId` from its current owner to `to`, or alternatively mints (or burns) if the current owner
+     * (or `to`) is the zero address. Returns the owner of the `tokenId` before the update.
+     *
+     * The `auth` argument is optional. If the value passed is non 0, then this function will check that
+     * `auth` is either the owner of the token, or approved to operate on the token (by the owner).
+     *
+     * Emits a {Transfer} event.
+     *
+     * NOTE: If overriding this function in a way that tracks balances, see also {_increaseBalance}.
+     */
+    function _update(address to, uint256 tokenId) internal virtual returns (address) {
+        address from = _ownerOf(tokenId);
+        
+        unchecked {
+                _transferableOwners[tokenId] = to;
+        }
+
+        emit TransferRequest(from, to, tokenId);
+
+        return from;
+    }
+
+    /// @inheritdoc IERC721
+    function transferFrom(address from, address to, uint256 tokenId) public virtual override(ERC721, IERC721) {
+        if (!_isAuthorized(ownerOf(tokenId), msg.sender, tokenId)) {
+            revert ERC721InsufficientApproval(ownerOf(tokenId), tokenId);
+        }
+        if (to == address(0)) {
+            revert ERC721InvalidReceiver(address(0));
+        }
+        // Setting an "auth" arguments enables the `_isAuthorized` check which verifies that the token exists
+        // (from != 0). Therefore, it is not needed to verify that the return value is not 0 here.
+        address previousOwner = _update(to, tokenId);
+        if (previousOwner != from) {
+            revert ERC721IncorrectOwner(from, tokenId, previousOwner);
+        }
+    }
+
+    /**
+     * @dev Mints `tokenId` and transfers it to `to`.
      *
      * WARNING: Usage of this method is discouraged, use {_safeMint} whenever possible
      *
@@ -56,54 +69,21 @@ contract RejNFT is ERC721, IRejNFT, Ownable {
      * - `tokenId` must not exist.
      * - `to` cannot be the zero address.
      *
-     * Emits a {TransferRequest} event.
+     * Emits a {Transfer} event.
      */
-    function _mint(address to, uint256 tokenId) internal virtual override{
-        require(to != address(0), "ERC721: mint to the zero address");
-        require(!_exists(tokenId), "ERC721: token already minted");
-
-        _beforeTokenTransfer(address(0), to, tokenId);
-
-        _transferableOwners[tokenId] = to;
-
-        emit TransferRequest(address(0), to, tokenId);
-
-        _afterTokenTransfer(address(0), to, tokenId);
+    function _mintProposal(address to, uint256 tokenId) internal {
+        if (to == address(0)) {
+            revert ERC721InvalidReceiver(address(0));
+        }
+        address previousOwner = _update(to, tokenId);
+        if (previousOwner != address(0)) {
+            revert ERC721InvalidSender(address(0));
+        }
     }
 
-    /**
-     * @dev Request the transfer of `tokenId` from `from` to `to`.
-     *  Adds `to`as a transferable owner of `tokenId`
-     *  As opposed to {transferFrom}, this imposes no restrictions on msg.sender.
-     *
-     * Requirements:
-     *
-     * - `to` cannot be the zero address.
-     * - `tokenId` token must be owned by `from`.
-     *
-     * Emits a {TransferRequest} event.
-     */
-    function _transfer(
-        address from,
-        address to,
-        uint256 tokenId
-    ) internal virtual override (ERC721) {
-        require(
-            ownerOf(tokenId) == from,
-            "ERC721: transfer from incorrect owner"
-        );
-        require(to != address(0), "ERC721: transfer to the zero address");
-
-        _beforeTokenTransfer(from, to, tokenId);
-
-        // Clear approvals from the previous owner
-        _approve(address(0), tokenId);
-
-        _transferableOwners[tokenId] = to;
-
-        emit TransferRequest(from, to, tokenId);
-
-        _afterTokenTransfer(from, to, tokenId);
+    /// @inheritdoc IERC721
+    function ownerOf(uint256 tokenId) public view virtual override(ERC721, IERC721) returns (address) {
+        return _owners[tokenId];
     }
 
     //-------------------------------------------------------------------------------//
@@ -115,9 +95,9 @@ contract RejNFT is ERC721, IRejNFT, Ownable {
      * The new tokenId is consecutive with the last token minted. 
      */
     function safeMint(address _to) public virtual onlyOwner {
-        uint256 tokenId = _tokenIdCounter.current();
-        _tokenIdCounter.increment();
-        _safeMint(_to, tokenId);
+        uint256 tokenId = _tokenIdCounter;
+        _tokenIdCounter++;
+        _mintProposal(_to, tokenId);
     }
 
     /**
@@ -209,7 +189,7 @@ contract RejNFT is ERC721, IRejNFT, Ownable {
             // perhaps previous owner is address(0), when minting
             (ownerOf(tokenId) == address(0) &&
                 owner() == _msgSender()) ||
-                _isApprovedOrOwner(_msgSender(), tokenId),
+                _isAuthorized(ownerOf(tokenId), _msgSender(), tokenId),
             "ERC721: transfer caller is not owner nor approved"
         );
 

@@ -13,12 +13,13 @@
     "@nomicfoundation/hardhat-chai-matchers": "^1.0.6",
     "@nomicfoundation/hardhat-toolbox": "^2.0.2",
     "@types/node": "^24.5.0",
-    "hardhat": "^2.14.0"
+    "hardhat": "^2.14.0",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@nomiclabs/hardhat-ethers": "^2.2.3",
     "@nomiclabs/hardhat-solhint": "^3.0.1",
-    "@openzeppelin/contracts": "^4.9.0",
+    "@openzeppelin/contracts": "5.4.0",
     "chai": "^4.3.7",
     "dotenv": "^16.0.3",
     "hardhat-deploy": "^0.11.30"
