@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "hardhat test test/00_RejNFT.test.ts --network hardhat",
-    "test:ExNFT": "hardhat test test/01_ExNFT.test.ts --network hardhat"
+    "test:ExNFT": "hardhat test test/01_ExNFT.test.ts --network hardhat",
+    "test:verifier": "certoraRun certora/confs/atomicity.conf --optimistic_loop"
   },
   "author": "Rosa Pericàs Gornals",
   "license": "MIT",

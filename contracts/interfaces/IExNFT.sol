@@ -15,10 +15,11 @@ interface IExNFT is IRejNFT{
      * @dev Emitted when `tokenId1` for `tokenId2` swap is proposed from `from` sender to `to` receiver, with an specified `deadline`.
      */
     event SwapRequest(
-        address indexed from,
-        address indexed to,
-        uint256 tokenId1,
+        address indexed caller,
+        uint256 indexed tokenId1,
         uint256 tokenId2,
+        address indexed from,
+        address to,
         uint256 deadline
     );
 
@@ -26,20 +27,22 @@ interface IExNFT is IRejNFT{
      * @dev Emitted when sender `from` accepts `tokenId1` for `tokenId2`swap from `from` to `to`.
      */
     event AcceptSwap(
+        address indexed caller,
+        uint256 indexed tokenId1,
+        uint256 tokenId2,
         address indexed from,
-        address indexed to,
-        uint256 tokenId1,
-        uint256 tokenId2
+        address to
     );
 
     /**
      * @dev Emitted when sender `from` cancels `tokenId1` for `tokenId2` swap from `from` to `to`.
      */
     event RejectOrCancelSwap(
+       address indexed caller,
+        uint256 indexed tokenId1,
+        uint256 tokenId2,
         address indexed from,
-        address indexed to,
-        uint256 tokenId1,
-        uint256 tokenId2
+        address to
     );
 
      /**

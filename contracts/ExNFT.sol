@@ -62,13 +62,13 @@ contract ExNFT is RejNFT, IExNFT {
         require(deadline > block.timestamp, "ExNFT: Incorrect deadline");
 
         // Clear approvals from the previous owner
-        approve(address(0), tokenId1);
+        _approve(address(0), tokenId1, from, false);
 
         swapProp[tokenId1] = proposal(from, to, tokenId1, tokenId2, deadline);
         newProposal[tokenId1] = true;
         newProposal[tokenId2] = true;
 
-        emit SwapRequest(from, to, tokenId1, tokenId2, deadline);
+        emit SwapRequest(msg.sender, tokenId1, tokenId2, from, to, deadline);
     }
 
 
@@ -103,7 +103,7 @@ contract ExNFT is RejNFT, IExNFT {
         newProposal[tokenId1] = false;
         newProposal[tokenId2] = false;
 
-        emit AcceptSwap(from, to, tokenId1, tokenId2);
+        emit AcceptSwap(msg.sender, tokenId1, tokenId2, from, to);
     }
 
     function rejectOrCancelSwap(uint256 tokenId1, uint256 tokenId2) public {
@@ -123,6 +123,6 @@ contract ExNFT is RejNFT, IExNFT {
         newProposal[tokenId1] = false;
         newProposal[tokenId2] = false;
 
-        emit RejectOrCancelSwap(from, to, tokenId1, tokenId2);
+        emit RejectOrCancelSwap(msg.sender, tokenId1, tokenId2, from, to);
     }
 }

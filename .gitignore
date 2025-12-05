@@ -4,8 +4,13 @@ coverage
 coverage.json
 typechain
 typechain-types
+bin
 
 # Hardhat files
 cache
 artifacts
+
+# Certora files
+.certora_internal
+
 
