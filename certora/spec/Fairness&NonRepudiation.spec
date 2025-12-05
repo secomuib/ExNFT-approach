@@ -145,15 +145,205 @@ function requireBasicProposalParams(
     require receiver != 0;
     require tokenId1 != 0;
     require tokenId2 != 0;
-    require deadline > e.block.timestamp;
+    require deadline > e.block.timestamp && deadline < max_uint256;
     require tokenId1 != tokenId2;
 }
 
-// ================================================================
-// NON-REPUDIATION Rules: 
-// Ensure that once a swap proposal is created, there is irrefutable 
-// evidence of who created it
-// ================================================================
+// Rule: correctOwnershipTransfer
+// Verifies that swaps result in the correct final ownership
+rule correctOwnershipTransfer(uint256 swapId) {
+    env e;
+    require validEnv(e);
+
+    address fromInitial;
+    address toInitial;
+    uint256 tokenId1Initial;
+    uint256 tokenId2Initial;
+    uint256 deadlineInitial;
+
+    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
+    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
+
+    // Execute Swap
+    acceptSwap(e, tokenId1Initial, tokenId2Initial);
+
+    address tokenId1OwnerFinal = ownerOf(tokenId1Initial);
+    address tokenId2OwnerFinal = ownerOf(tokenId2Initial);
+
+    // Both tokens have correct final owners
+    assert tokenId1OwnerFinal == toInitial;
+    assert tokenId2OwnerFinal == fromInitial;
+}
+
+// Rule: ownershipOrAllowanceProposal
+// Ensures only authorized parties can propose swaps
+rule ownershipOrAllowanceProposal() {
+    env e;
+    require validEnv(e);
+
+    address receiver;
+    uint256 tokenId1;
+    uint256 tokenId2;
+    uint256 deadline;
+
+    requireBasicProposalParams(receiver, tokenId1, tokenId2, deadline, e);
+
+    // Ensure the proposer is the owner of tokenId1
+    address proposer = ownerOf(tokenId1);
+
+    // Ensure the receiver is the owner of tokenId2
+    require receiver == ownerOf(tokenId2);
+
+    // Ensure receiver and owner are non-zero
+    require receiver != 0;
+    require proposer != 0;
+
+    // Ensure proposer and receiver are distinct
+    require proposer != receiver;
+
+    // Verify that sender is authorized to propose the swap for tokenId1
+    bool isAuthorized = isAuthorized(e, e.msg.sender, tokenId1);
+
+    // tokenId1 must not have any opened swap proposals
+    require !isTokenPropOpened(e, tokenId1) == true;
+
+    // Propose Swap
+    swapProposal@withrevert(e, proposer, receiver, tokenId1, tokenId2, deadline);
+    bool succeeded = !lastReverted;
+
+    // Swap proposal only succeeds if sender is authorized
+    assert succeeded <=> isAuthorized;
+}
+
+// Rule: ownershipOrAllowanceAcceptance
+// Ensures only authorized parties can accept swaps
+rule ownershipOrAllowanceAcceptance() {
+    env e;
+    require validEnv(e);
+
+    uint256 swapId;
+    address fromInitial;
+    address toInitial;
+    uint256 tokenId1Initial;
+    uint256 tokenId2Initial;
+    uint256 deadlineInitial;
+
+    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
+    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
+
+    // Verify that sender is authorized to accept the swap for tokenId2
+    bool isAuthorized = isAuthorized(e, e.msg.sender, tokenId2Initial);
+
+    // tokenId2 must not have any opened swap proposals
+    require !isTokenPropOpened(e, tokenId2Initial);
+
+    acceptSwap@withrevert(e, tokenId1Initial, tokenId2Initial);
+    bool succeeded = !lastReverted;
+
+    // Swap acceptance only succeeds if sender is authorized
+    assert succeeded <=> isAuthorized;
+}
+
+// Rule: noTokenTheft
+// A malicious actor (one of the swap parties) can only gain ownership
+// of a token they didn't originally own if they lose ownership of their own token
+rule noTokenTheft(uint256 swapId, method f) filtered { 
+        f -> f.selector != sig:acceptTransfer(uint256).selector
+    } {
+    env e;
+    require validEnv(e);
+
+    address fromInitial;
+    address toInitial;
+    uint256 tokenId1Initial;
+    uint256 tokenId2Initial;
+    uint256 deadlineInitial;
+    address maliciousActor;
+
+    require e.msg.sender == maliciousActor;
+
+    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
+    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
+
+    require maliciousActor == fromInitial || maliciousActor == toInitial; // Malicious actor is one of the swap parties
+    require !isTokenPropOpened(e, tokenId2Initial); // Ensure tokenId2Initial doesn't have any opened swap proposals
+
+    address tokenId1OwnerInitial = ownerOf(tokenId1Initial);
+    address tokenId2OwnerInitial = ownerOf(tokenId2Initial);
+
+    // Execute any function
+    calldataarg args;
+    if (f.selector == sig:acceptSwap(uint256,uint256).selector) {
+        acceptSwap(e, tokenId1Initial, tokenId2Initial);
+    } else {
+        f(e, args);
+    }
+
+    address tokenId1OwnerFinal = ownerOf(tokenId1Initial);
+    address tokenId2OwnerFinal = ownerOf(tokenId2Initial);
+
+    // If malicious actor managed to gain ownership of one token, they must have lost ownership of the other token
+    assert (maliciousActor != tokenId1OwnerInitial && maliciousActor == tokenId1OwnerFinal) =>
+           (maliciousActor == tokenId2OwnerInitial && maliciousActor != tokenId2OwnerFinal);
+}
+
+// Rule: eventPersists
+// Ensures that proposal evidence persists even after other contract operations
+rule eventPersists(method f) filtered {
+    f -> f.contract == currentContract
+            && !f.isView
+            // Exclude safeTransferFrom to avoid HAVOC from onERC721Received callbacks
+            && f.selector != sig:safeTransferFrom(address,address,uint256).selector
+            && f.selector != sig:safeTransferFrom(address,address,uint256,bytes).selector
+} {
+    env e;
+    require validEnv(e);
+
+    address proposer;
+    address receiver;
+    uint256 tokenId1;
+    uint256 tokenId2;
+    uint256 deadline;
+
+    require proposer != 0;
+    requireBasicProposalParams(receiver, tokenId1, tokenId2, deadline, e);
+
+    address caller = e.msg.sender;
+    swapProposal(e, proposer, receiver, tokenId1, tokenId2, deadline);
+
+    calldataarg args;
+    f(e, args);
+
+    // Evidence of the swap proposal event still persists
+    assert ghostProposalCreated[tokenId1];
+    // Caller can not deny having created the proposal
+    assert ghostProposalCaller[tokenId1] == caller;
+}
+
+// Rule: deadlineRespected
+// Proposals cannot be accepted after they expire
+rule deadlineRespected(uint256 swapId) {
+    env e;
+    require validEnv(e);
+
+    address fromInitial;
+    address toInitial;
+    uint256 tokenId1Initial;
+    uint256 tokenId2Initial;
+    uint256 deadlineInitial;
+
+    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
+    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
+
+    require !isTokenPropOpened(e, tokenId2Initial); // Ensure tokenId2Initial doesn't have any opened swap proposals
+    require e.msg.sender == toInitial; // Only the 'to' address can accept the swap
+
+    acceptSwap@withrevert(e, tokenId1Initial, tokenId2Initial);
+    bool succeeded = !lastReverted;
+
+    // acceptSwap only succeeds if current time is before deadline
+    assert succeeded <=> (e.block.timestamp < deadlineInitial);
+}
 
 // Rule: proposalNonRepudiation
 // Verifies that the proposer cannot deny having created a swap proposal
@@ -242,89 +432,14 @@ rule cancellationNonRepudiation() {
     assert caller == ghostCancellationCaller[swapId];
 }
 
-// Rule: eventPersists
-// Ensures that proposal evidence persists even after other contract operations
-rule eventPersists(method f) filtered {
-    f -> f.contract == currentContract
-            && !f.isView
-            // Exclude safeTransferFrom to avoid HAVOC from onERC721Received callbacks
-            && f.selector != sig:safeTransferFrom(address,address,uint256).selector
-            && f.selector != sig:safeTransferFrom(address,address,uint256,bytes).selector
+// Rule: selectiveReception
+// Ensure that the receiver must explicitly accept the swap to successfully transfer the tokens ownership
+rule selectiveReception(uint256 swapId, method f) filtered {
+    f -> f.selector != sig:acceptTransfer(uint256).selector
 } {
     env e;
     require validEnv(e);
 
-    address proposer;
-    address receiver;
-    uint256 tokenId1;
-    uint256 tokenId2;
-    uint256 deadline;
-
-    require proposer != 0;
-    requireBasicProposalParams(receiver, tokenId1, tokenId2, deadline, e);
-
-    address caller = e.msg.sender;
-    swapProposal(e, proposer, receiver, tokenId1, tokenId2, deadline);
-
-    calldataarg args;
-    f(e, args);
-
-    // Evidence of the swap proposal event still persists
-    assert ghostProposalCreated[tokenId1];
-    // Caller can not deny having created the proposal
-    assert ghostProposalCaller[tokenId1] == caller;
-}
-
-// ================================================================
-// FAIRNESS Rules
-// Ensure that both parties in the swap protocol are treated fairly
-// ================================================================
-
-// Rule: ownershipOrAllowanceProposal
-// Ensures only authorized parties can propose swaps
-rule ownershipOrAllowanceProposal() {
-    env e;
-    require validEnv(e);
-
-    address receiver;
-    uint256 tokenId1;
-    uint256 tokenId2;
-    uint256 deadline;
-
-    requireBasicProposalParams(receiver, tokenId1, tokenId2, deadline, e);
-
-    // Ensure the proposer is the owner of tokenId1
-    address proposer = ownerOf(tokenId1);
-
-    // Ensure the receiver is the owner of tokenId2
-    require receiver == ownerOf(tokenId2);
-    require receiver != 0;
-
-    // Ensure tokens are distinct and non-zero
-    require proposer != 0;
-    require proposer != receiver;
-
-    // Verify that sender is authorized to propose the swap for tokenId1
-    bool isAuthorized = isAuthorized(e, e.msg.sender, tokenId1);
-
-    // tokenId1 must not have any opened swap proposals
-    require !isTokenPropOpened(e, tokenId1) == true;
-
-    // Propose Swap
-    swapProposal@withrevert(e, proposer, receiver, tokenId1, tokenId2, deadline);
-    bool succeeded = !lastReverted;
-
-    // Swap proposal only succeeds if sender is authorized
-    assert succeeded <=> isAuthorized;
-}
-
-// Rule: ownershipOrAllowanceAcceptance
-// Ensures only authorized parties can accept swaps
-rule ownershipOrAllowanceAcceptance() {
-    env e;
-    require validEnv(e);
-
-    uint256 swapId;
     address fromInitial;
     address toInitial;
     uint256 tokenId1Initial;
@@ -334,17 +449,70 @@ rule ownershipOrAllowanceAcceptance() {
     fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
     requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
 
-    // Verify that sender is authorized to accept the swap for tokenId2
-    bool isAuthorized = isAuthorized(e, e.msg.sender, tokenId2Initial);
+    address tokenId1OwnerInitial = ownerOf(tokenId1Initial);
+    address tokenId2OwnerInitial = ownerOf(tokenId2Initial);
 
-    // tokenId2 must not have any opened swap proposals
-    require !isTokenPropOpened(e, tokenId2Initial);
+    // Execute any function
+    calldataarg args;
+    f(e, args);
 
-    acceptSwap@withrevert(e, tokenId1Initial, tokenId2Initial);
-    bool succeeded = !lastReverted;
+    address tokenId1OwnerFinal = ownerOf(tokenId1Initial);
+    address tokenId2OwnerFinal = ownerOf(tokenId2Initial);
+    
+    // Both tokens have swapped owners
+    assert (tokenId1OwnerFinal != tokenId1OwnerInitial) => f.selector == sig:acceptSwap(uint256,uint256).selector;
+    assert (tokenId2OwnerFinal != tokenId2OwnerInitial) => f.selector == sig:acceptSwap(uint256,uint256).selector;
+}
 
-    // Swap acceptance only succeeds if sender is authorized
-    assert succeeded <=> isAuthorized;
+// Rule: selectiveAcceptance
+// Verifies that when multiple swap proposals exists for the same tokenId, the receiver must 
+// selectively reject the unwanted proposals and accept the desired one 
+rule selectiveAcceptance(uint256 swapId1, uint256 swapId2) {
+    env e;
+    require validEnv(e);
+
+    address fromInitial1;
+    address toInitial1;
+    uint256 tokenId1Initial1;
+    uint256 tokenId2Initial1;
+    uint256 deadlineInitial1;
+
+    address fromInitial2;
+    address toInitial2;
+    uint256 tokenId1Initial2;
+    uint256 tokenId2Initial2;
+    uint256 deadlineInitial2;
+
+    fromInitial1, toInitial1, tokenId1Initial1, tokenId2Initial1, deadlineInitial1 = swapProp(swapId1);
+    requireValidSwapSetup(e, swapId1, fromInitial1, toInitial1, tokenId1Initial1, tokenId2Initial1, deadlineInitial1);
+
+    fromInitial2, toInitial2, tokenId1Initial2, tokenId2Initial2, deadlineInitial2 = swapProp(swapId2);
+    requireValidSwapSetup(e, swapId2, fromInitial2, toInitial2, tokenId1Initial2, tokenId2Initial2, deadlineInitial2);
+
+    address tokenId1OwnerInitial1 = ownerOf(tokenId1Initial1);
+    address tokenId2OwnerInitial1 = ownerOf(tokenId2Initial1);
+
+    address tokenId1OwnerInitial2 = ownerOf(tokenId1Initial2);
+    address tokenId2OwnerInitial2 = ownerOf(tokenId2Initial2);
+
+    require swapId1 != swapId2 && fromInitial1 != fromInitial2 && tokenId1Initial1 != tokenId1Initial2; // Ensure different swaps
+    require toInitial1 == toInitial2 && tokenId2Initial1 == tokenId2Initial2; // Same receiver and tokenId2 
+    require isAuthorized(e, e.msg.sender, tokenId2Initial1); // Sender is authorized to accept the swap for tokenId2
+    require !isTokenPropOpened(e, tokenId2Initial1); // Ensure tokenId2OwnerInitial doesn't have opened any swap proposal
+
+    storage initialState = lastStorage;
+
+    // Attempt to accept swapId1 
+    acceptSwap@withrevert(e, tokenId1Initial1, tokenId2Initial1);
+    bool succeeded1 = !lastReverted;
+
+    // Attempt to accept swapId2
+    acceptSwap@withrevert(e, tokenId1Initial2, tokenId2Initial2) at initialState;
+    bool succeeded2 = !lastReverted;
+
+
+    assert succeeded1 && succeeded2; // Receiver can selectively accept both swaps
+
 }
 
 // Rule: atomicSwap
@@ -374,32 +542,6 @@ rule atomicSwap(uint256 swapId) {
     // Both tokens have swapped owners
     assert (tokenId1OwnerFinal != tokenId1OwnerInitial) => (tokenId2OwnerFinal != tokenId2OwnerInitial);
     assert (tokenId2OwnerFinal != tokenId2OwnerInitial) => (tokenId1OwnerFinal != tokenId1OwnerInitial);
-}
-
-// Rule: correctOwnershipTransfer
-// Verifies that swaps result in the correct final ownership
-rule correctOwnershipTransfer(uint256 swapId) {
-    env e;
-    require validEnv(e);
-
-    address fromInitial;
-    address toInitial;
-    uint256 tokenId1Initial;
-    uint256 tokenId2Initial;
-    uint256 deadlineInitial;
-
-    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
-    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
-
-    // Execute Swap
-    acceptSwap(e, tokenId1Initial, tokenId2Initial);
-
-    address tokenId1OwnerFinal = ownerOf(tokenId1Initial);
-    address tokenId2OwnerFinal = ownerOf(tokenId2Initial);
-
-    // Both tokens have correct final owners
-    assert tokenId1OwnerFinal == toInitial;
-    assert tokenId2OwnerFinal == fromInitial;
 }
 
 // Rule: nonPartialExecution
@@ -442,31 +584,6 @@ rule nonPartialExecution(uint256 swapId) {
     }
 }
 
-// Rule: deadlineRespected
-// Proposals cannot be accepted after they expire
-rule deadlineRespected(uint256 swapId) {
-    env e;
-    require validEnv(e);
-
-    address fromInitial;
-    address toInitial;
-    uint256 tokenId1Initial;
-    uint256 tokenId2Initial;
-    uint256 deadlineInitial;
-
-    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
-    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
-
-    require !isTokenPropOpened(e, tokenId2Initial); // Ensure tokenId2Initial doesn't have any opened swap proposals
-    require e.msg.sender == toInitial; // Only the 'to' address can accept the swap
-
-    acceptSwap@withrevert(e, tokenId1Initial, tokenId2Initial);
-    bool succeeded = !lastReverted;
-
-    // acceptSwap only succeeds if current time is before deadline
-    assert succeeded <=> (e.block.timestamp < deadlineInitial);
-}
-
 // Rule: symmetricCancellation
 // Ensures both parties have equal rights to cancel/reject proposals
 rule symmetricCancellation(uint256 swapId) {
@@ -506,51 +623,3 @@ rule symmetricCancellation(uint256 swapId) {
     // Both parties can successfully cancel/reject the swap
     assert proposerCanCancel == receiverCanReject;
 }
-
-// Rule: noTokenTheft
-// A malicious actor (one of the swap parties) can only gain ownership
-// of a token they didn't originally own if they lose ownership of their own token
-rule noTokenTheft(uint256 swapId, method f) filtered { 
-        f -> f.selector != sig:acceptTransfer(uint256).selector
-    } {
-    env e;
-    require validEnv(e);
-
-    address fromInitial;
-    address toInitial;
-    uint256 tokenId1Initial;
-    uint256 tokenId2Initial;
-    uint256 deadlineInitial;
-    address maliciousActor;
-
-    require e.msg.sender == maliciousActor;
-
-    fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial = swapProp(swapId);
-    requireValidSwapSetup(e, swapId, fromInitial, toInitial, tokenId1Initial, tokenId2Initial, deadlineInitial);
-
-    require maliciousActor == fromInitial || maliciousActor == toInitial; // Malicious actor is one of the swap parties
-    require !isTokenPropOpened(e, tokenId2Initial); // Ensure tokenId2Initial doesn't have any opened swap proposals
-
-    address tokenId1OwnerInitial = ownerOf(tokenId1Initial);
-    address tokenId2OwnerInitial = ownerOf(tokenId2Initial);
-
-    // Execute any function
-    calldataarg args;
-    if (f.selector == sig:acceptSwap(uint256,uint256).selector) {
-        acceptSwap(e, tokenId1Initial, tokenId2Initial);
-    } else {
-        f(e, args);
-    }
-
-    address tokenId1OwnerFinal = ownerOf(tokenId1Initial);
-    address tokenId2OwnerFinal = ownerOf(tokenId2Initial);
-
-    // If malicious actor managed to gain ownership of one token, they must have lost ownership of the other token
-    assert (maliciousActor != tokenId1OwnerInitial && maliciousActor == tokenId1OwnerFinal) =>
-           (maliciousActor == tokenId2OwnerInitial && maliciousActor != tokenId2OwnerFinal);
-}
-
-
-
-
-

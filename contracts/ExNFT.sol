@@ -59,7 +59,7 @@ contract ExNFT is RejNFT, IExNFT {
             to != address(0) && ownerOf(tokenId2) == to,
             "ExNFT: transfer to incorrect owner"
         );
-        require(deadline > block.timestamp, "ExNFT: Incorrect deadline");
+        require(deadline > block.timestamp && deadline < type(uint256).max, "ExNFT: Incorrect deadline");
 
         // Clear approvals from the previous owner
         _approve(address(0), tokenId1, from, false);
@@ -124,5 +124,14 @@ contract ExNFT is RejNFT, IExNFT {
         newProposal[tokenId2] = false;
 
         emit RejectOrCancelSwap(msg.sender, tokenId1, tokenId2, from, to);
+    }
+
+    function acceptTransfer(uint256 tokenId) public virtual override(IRejNFT, RejNFT) {
+        // Verify no active swap proposal opened for this token
+        require(
+            swapProp[tokenId].from == address(0) || swapProp[tokenId].deadline < block.timestamp,
+            "ExNFT: can't accept transfer while having an active swap proposal"
+        );
+        super.acceptTransfer(tokenId);
     }
 }
